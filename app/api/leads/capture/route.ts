@@ -134,8 +134,8 @@ export async function POST(req: NextRequest) {
     const neetScore = data.neetScore ? parseInt(String(data.neetScore), 10) : undefined;
     const budget = data.budget || data.estimatedBudget || (branch === "masters" ? "₹35 L+" : "₹22–28 L");
 
-    // 6. Check for previous inquiries with same phone/email
-    const existingLeads = getLeads();
+    // 6. Check for previous inquiries with same phone/email in this branch
+    const existingLeads = getLeads(branch);
     const existing = existingLeads.find((l) => {
       const matchPhone = l.phone.replace(/\D/g, "") === phone.replace(/\D/g, "");
       const matchEmail = email && l.email && l.email === email;

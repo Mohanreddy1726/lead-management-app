@@ -99,8 +99,9 @@ export const syncLeadsFromDb = async (forceEmit = false) => {
       const uniqueLeads: Lead[] = [];
       for (const item of data.leads) {
         const norm = normalizePhone(item.phone);
-        if (!norm || !seen.has(norm)) {
-          if (norm) seen.add(norm);
+        const key = `${norm}_${item.branch || "mbbs"}`;
+        if (!norm || !seen.has(key)) {
+          if (norm) seen.add(key);
           uniqueLeads.push(item);
         }
       }

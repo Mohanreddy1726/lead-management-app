@@ -57,6 +57,17 @@ function isRealName(name?: string): boolean {
   return !PLACEHOLDER_NAMES.some((p) => lower.includes(p));
 }
 
+const MASTERS_COUNTRIES = ["germany", "usa", "uk", "united kingdom", "ireland", "canada", "australia", "france", "sweden", "netherlands", "italy"];
+
+function checkIsMasters(countryStr = "", ...otherFields: any[]): boolean {
+  const c = countryStr.toLowerCase().trim();
+  if (MASTERS_COUNTRIES.some((mc) => c.includes(mc))) return true;
+  for (const f of otherFields) {
+    if (f && String(f).toLowerCase().includes("master")) return true;
+  }
+  return false;
+}
+
 export async function syncWebsiteSubmissions(): Promise<number> {
   let importedCount = 0;
 
@@ -64,7 +75,7 @@ export async function syncWebsiteSubmissions(): Promise<number> {
     await dbConnect();
     const gvkDb = await getGvkDb();
 
-    // 0. Fetch all existing leads and build phone lookup & submission ID cache
+    // 0. Fetch all existing leads and build branch-scoped phone lookup & submission ID cache
     const existingLeads = await LeadModel.find({}).lean();
     const phoneToLeadMap = new Map<string, any>();
     const existingSubmissionIds = new Set<string>();
@@ -72,7 +83,7 @@ export async function syncWebsiteSubmissions(): Promise<number> {
     for (const lead of existingLeads) {
       const norm = normalizePhone(lead.phone);
       if (norm) {
-        phoneToLeadMap.set(norm, lead);
+        phoneToLeadMap.set(`${norm}_${lead.branch || "mbbs"}`, lead);
       }
       if (lead.rawPayload?.submissionId) {
         existingSubmissionIds.add(String(lead.rawPayload.submissionId));
@@ -82,7 +93,7 @@ export async function syncWebsiteSubmissions(): Promise<number> {
       }
     }
 
-    // 1. Parallel scan all 6 collections for valid submission IDs
+    // 1. Parallel scan all collections for valid submission IDs
     const collections = [
       "mbbs_abroad_submissions",
       "apply_submissions",
@@ -90,6 +101,7 @@ export async function syncWebsiteSubmissions(): Promise<number> {
       "budget_calculator_submissions",
       "smart_comparison_submissions",
       "roi_planner_submissions",
+      "whatsapp_submissions",
     ];
 
     const validSubmissionIds = new Set<string>();
@@ -134,7 +146,7 @@ export async function syncWebsiteSubmissions(): Promise<number> {
 
     const newLeadsToInsert: any[] = [];
 
-    // Helper: process a single submission document with strict mobile number deduplication
+    // Helper: process a single submission document with strict branch-scoped deduplication
     const processSubmission = async (
       doc: any,
       submissionId: string,
@@ -164,10 +176,11 @@ export async function syncWebsiteSubmissions(): Promise<number> {
       if (!normPhone) return;
 
       const subName = doc.name || doc.fullName;
+      const leadKey = `${normPhone}_${options.branch}`;
 
-      // ── IF LEAD WITH THIS MOBILE NUMBER ALREADY EXISTS: MERGE & UPDATE ──
-      if (phoneToLeadMap.has(normPhone)) {
-        const existing = phoneToLeadMap.get(normPhone);
+      // ── IF LEAD WITH THIS MOBILE NUMBER ALREADY EXISTS IN THIS BRANCH: MERGE & UPDATE ──
+      if (phoneToLeadMap.has(leadKey)) {
+        const existing = phoneToLeadMap.get(leadKey);
         existingSubmissionIds.add(submissionId);
 
         const updates: Record<string, any> = {};
@@ -176,24 +189,28 @@ export async function syncWebsiteSubmissions(): Promise<number> {
         updates.tags = Array.from(currentTags);
 
         if (!existing.neetScore && options.neetScore) updates.neetScore = options.neetScore;
-        if ((!existing.budget || existing.budget === "₹25 Lakh") && options.budget) updates.budget = options.budget;
+        if (options.budget && (!existing.budget || existing.budget === "₹25 Lakh")) updates.budget = options.budget;
         if (!existing.parentName && options.parentName) updates.parentName = options.parentName;
-        if (!existing.university && options.university) updates.university = options.university;
-        if (!isRealName(existing.name) && isRealName(subName)) updates.name = subName;
+        if (options.university) updates.university = options.university;
+        if (options.country && (!existing.country || existing.country === "Kazakhstan" || existing.country === "Georgia" || existing.country === "Germany")) {
+          updates.country = options.country;
+        }
+        if (subName && isRealName(subName)) updates.name = subName;
+        if (doc.email && (!existing.email || existing.email.includes("web-inquiry"))) updates.email = doc.email;
 
         const raw = existing.rawPayload || {};
         const allSubIds = new Set(raw.allSubmissionIds || [raw.submissionId].filter(Boolean));
         allSubIds.add(submissionId);
         raw.allSubmissionIds = Array.from(allSubIds);
         raw.submissionCount = (raw.submissionCount || 1) + 1;
-        updates.rawPayload = raw;
+        updates.rawPayload = { ...raw, ...doc };
         updates.updatedAt = new Date();
 
         await LeadModel.updateOne({ _id: existing._id }, { $set: updates });
         return;
       }
 
-      // ── NEW UNIQUE MOBILE NUMBER: CREATE LEAD ──
+      // ── NEW UNIQUE LEAD FOR THIS BRANCH: CREATE LEAD ──
       const leadId = `GVK-2026-${Math.floor(100000 + Math.random() * 900000)}`;
       const name = subName || (options.source === "Google Ads" ? "Google Ads Inquirer" : "Website Inquirer");
       const email = doc.email || `${name.toLowerCase().replace(/\s+/g, ".")}.${phone.slice(-4)}@web-inquiry.com`;
@@ -234,7 +251,7 @@ export async function syncWebsiteSubmissions(): Promise<number> {
       };
 
       newLeadsToInsert.push(newLead);
-      phoneToLeadMap.set(normPhone, newLead);
+      phoneToLeadMap.set(leadKey, newLead);
       existingSubmissionIds.add(submissionId);
     };
 
@@ -281,9 +298,7 @@ export async function syncWebsiteSubmissions(): Promise<number> {
       for (const doc of applyDocs) {
         const submissionId = String(doc._id);
         const country = doc.country ? String(doc.country) : "Kazakhstan";
-        const isMasters = ["germany", "usa", "uk", "ireland", "canada", "australia"].some((c) =>
-          country.toLowerCase().includes(c)
-        );
+        const isMasters = checkIsMasters(country, doc.programType, doc.program, doc.courseType);
         const branch: Branch = isMasters ? "masters" : "mbbs";
 
         await processSubmission(doc, submissionId, {
@@ -351,14 +366,15 @@ export async function syncWebsiteSubmissions(): Promise<number> {
 
       for (const doc of budgetDocs) {
         const submissionId = String(doc._id);
-        const isMasters = String(doc.programType || "").toLowerCase().includes("master");
+        const country = doc.country || "";
+        const isMasters = checkIsMasters(country, doc.programType, doc.program, doc.courseType);
         const branch: Branch = isMasters ? "masters" : "mbbs";
         const state = doc.state || "Telangana";
 
         await processSubmission(doc, submissionId, {
           source: "Website",
           course: isMasters ? "Masters Abroad" : "MBBS Abroad",
-          country: doc.country || (isMasters ? "Germany" : "Kazakhstan"),
+          country: doc.country || (isMasters ? "United Kingdom" : "Kazakhstan"),
           branch,
           tags: ["Budget Calculator", "Website Lead", ...(isMasters ? ["Masters Lead"] : [])],
           score: 80,
@@ -386,13 +402,14 @@ export async function syncWebsiteSubmissions(): Promise<number> {
 
       for (const doc of compareDocs) {
         const submissionId = String(doc._id);
-        const isMasters = String(doc.courseType || "").toLowerCase().includes("master");
+        const firstItem = (doc.selectedItems && doc.selectedItems[0]) || "";
+        const isMasters = checkIsMasters(firstItem, doc.courseType, doc.programType, doc.program);
         const branch: Branch = isMasters ? "masters" : "mbbs";
 
         await processSubmission(doc, submissionId, {
           source: "Website",
           course: isMasters ? "Masters Abroad" : "MBBS Abroad",
-          country: (doc.selectedItems && doc.selectedItems[0]) || (isMasters ? "Germany" : "Kazakhstan"),
+          country: firstItem || (isMasters ? "United Kingdom" : "Kazakhstan"),
           branch,
           tags: ["Smart Compare", "Website Lead", ...(isMasters ? ["Masters Lead"] : [])],
           score: 72,
@@ -418,14 +435,15 @@ export async function syncWebsiteSubmissions(): Promise<number> {
 
       for (const doc of roiDocs) {
         const submissionId = String(doc._id);
-        const isMasters = String(doc.courseType || "").toLowerCase().includes("master");
+        const country = doc.country || "";
+        const isMasters = checkIsMasters(country, doc.courseType, doc.programType, doc.program);
         const branch: Branch = isMasters ? "masters" : "mbbs";
         const neetScore = parseNeetScore(doc.neetScore);
 
         await processSubmission(doc, submissionId, {
           source: "Website",
           course: isMasters ? "Masters Abroad" : "MBBS Abroad",
-          country: doc.country || (isMasters ? "Germany" : "Kazakhstan"),
+          country: doc.country || (isMasters ? "United Kingdom" : "Kazakhstan"),
           branch,
           tags: ["ROI Planner", "Website Lead", ...(isMasters ? ["Masters Lead"] : [])],
           score: 75,
@@ -441,7 +459,41 @@ export async function syncWebsiteSubmissions(): Promise<number> {
       console.warn("[Website Sync] roi_planner error:", err);
     }
 
-    // 9. Perform single bulk insert if any new leads were found
+    // 9. Ingest WhatsApp Website Bot submissions
+    try {
+      const waDocs = await gvkDb
+        .collection("whatsapp_submissions")
+        .find()
+        .sort({ _id: -1 })
+        .limit(200)
+        .toArray();
+
+      for (const doc of waDocs) {
+        const submissionId = String(doc._id);
+        const country = doc.country && doc.country !== "Other / Need Guidance" ? doc.country : "";
+        const isMasters = checkIsMasters(country, doc.program, doc.mastersField);
+        const branch: Branch = isMasters ? "masters" : "mbbs";
+
+        await processSubmission(doc, submissionId, {
+          source: "Website",
+          course: isMasters ? "Masters Abroad" : "MBBS Abroad",
+          country: country || (isMasters ? "United Kingdom" : "Kazakhstan"),
+          branch,
+          tags: ["WhatsApp Bot", "Website Lead", ...(isMasters ? ["Masters Lead"] : [])],
+          score: 82,
+          assignedTo: null,
+          formId: "WhatsApp Website Bot",
+          landingPage: "/",
+          utmCampaign: "WhatsApp Website Bot",
+          budget: isMasters ? "₹35 L+" : "₹22–28 L",
+          state: doc.city || "Telangana",
+        });
+      }
+    } catch (err) {
+      console.warn("[Website Sync] whatsapp_submissions error:", err);
+    }
+
+    // 10. Perform single bulk insert if any new leads were found
     if (newLeadsToInsert.length > 0) {
       try {
         await LeadModel.insertMany(newLeadsToInsert, { ordered: false });

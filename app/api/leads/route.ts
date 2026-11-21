@@ -47,14 +47,15 @@ export async function GET(req: NextRequest) {
 
     const docs = await LeadModel.find(filter).sort({ createdAt: -1 }).lean();
 
-    // Deduplicate by normalized 10-digit mobile number
+    // Deduplicate by normalized 10-digit mobile number scoped to division branch
     const seenPhones = new Set<string>();
     const uniqueDocs: any[] = [];
     for (const doc of docs) {
       const digits = String(doc.phone || "").replace(/\D/g, "");
       const norm = digits.length >= 10 ? digits.slice(-10) : digits;
-      if (!norm || !seenPhones.has(norm)) {
-        if (norm) seenPhones.add(norm);
+      const key = `${norm}_${doc.branch || "mbbs"}`;
+      if (!norm || !seenPhones.has(key)) {
+        if (norm) seenPhones.add(key);
         uniqueDocs.push(doc);
       }
     }
