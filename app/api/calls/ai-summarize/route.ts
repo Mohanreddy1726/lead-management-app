@@ -35,24 +35,51 @@ Provide your analysis strictly in valid JSON format matching this schema:
   "callbackDays": 1 or 2 (number of days from today for next callback)
 }`;
 
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: { responseMimeType: "application/json" },
-            }),
-          }
-        );
+        const modelsToTry = [
+          "gemini-3.5-flash-lite",
+          "gemini-flash-latest",
+          "gemini-1.5-flash",
+        ];
 
-        if (geminiRes.ok) {
-          const geminiData = await geminiRes.json();
-          const rawText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (rawText) {
-            const parsed = JSON.parse(rawText);
-            const tomorrow = new Date();
+        let parsed: any = null;
+
+        for (const model of modelsToTry) {
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 10000);
+
+            const geminiRes = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+              {
+                signal: controller.signal,
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents: [{ parts: [{ text: prompt }] }],
+                  generationConfig: { responseMimeType: "application/json" },
+                }),
+              }
+            );
+
+            clearTimeout(timer);
+
+            if (geminiRes.ok) {
+              const geminiData = await geminiRes.json();
+              const rawText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+              if (rawText) {
+                parsed = JSON.parse(rawText);
+                break;
+              }
+            } else {
+              console.warn(`Gemini model ${model} returned status ${geminiRes.status}`);
+            }
+          } catch (modelErr) {
+            console.warn(`Gemini model ${model} fetch failed:`, modelErr);
+          }
+        }
+
+        if (parsed) {
+          const tomorrow = new Date();
             tomorrow.setDate(tomorrow.getDate() + (parsed.callbackDays || 1));
             const followUpDateStr = tomorrow.toISOString().split("T")[0];
 
@@ -69,7 +96,6 @@ Provide your analysis strictly in valid JSON format matching this schema:
               },
             });
           }
-        }
       } catch (geminiErr) {
         console.warn("[AI Summarize] Gemini API warning, falling back to smart analyzer:", geminiErr);
       }
