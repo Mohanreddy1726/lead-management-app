@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useSyncExternalStore } from "react";
+import React, { useState, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
@@ -44,9 +44,17 @@ import {
   Play,
   Pause,
   Loader2,
+  FolderOpen,
+  Upload,
+  FileAudio,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { CallAudioRecorder, uploadCallRecording, fetchCallAiSummary } from "@/lib/audio-recorder";
+import {
+  CallAudioRecorder,
+  uploadCallRecording,
+  uploadNativeCallRecordingFile,
+  fetchCallAiSummary,
+} from "@/lib/audio-recorder";
 import {
   getLeads,
   getTelecallers,
@@ -170,6 +178,11 @@ export function TelecallerMobileDashboard() {
     transcript?: string;
     aiSummary?: any;
   } | null>(null);
+
+  // Native phone call recording file picker state
+  const nativeFileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploadingNativeAudio, setIsUploadingNativeAudio] = useState(false);
+  const [attachedFileName, setAttachedFileName] = useState("");
 
   // WhatsApp template modal state
   const [whatsAppLead, setWhatsAppLead] = useState<Lead | null>(null);
@@ -343,6 +356,102 @@ export function TelecallerMobileDashboard() {
     setActiveCallLead(null);
     setPostCallModalOpen(true);
     setPresence("Active");
+  };
+
+  // Upload and process native phone recording (.m4a / .mp3 from mobile storage)
+  const handleNativeAudioSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const targetLead = postCallData?.lead || activeCallLead;
+    if (!targetLead) {
+      toast.error("No active lead selected for this recording");
+      return;
+    }
+
+    const currentDuration = postCallData?.duration || formatTimer(callTimer) || "2m 00s";
+
+    // If call is still active in state, stop recording
+    if (activeCallLead) {
+      if (recorderRef.current) {
+        try {
+          await recorderRef.current.stop();
+        } catch (err) {}
+      }
+      setIsRecording(false);
+      setActiveCallLead(null);
+    }
+
+    setIsUploadingNativeAudio(true);
+    setAttachedFileName(file.name);
+    toast.loading("Uploading phone recording & analyzing with Gemini AI...", { id: "native-audio-upload" });
+
+    try {
+      const localUrl = URL.createObjectURL(file);
+
+      // 1. Upload audio file
+      const uploadRes = await uploadNativeCallRecordingFile(file, targetLead.id, currentDuration);
+      if (!uploadRes?.recordingUrl) {
+        toast.error("Failed to upload recording file", { id: "native-audio-upload" });
+        setIsUploadingNativeAudio(false);
+        return;
+      }
+
+      // 2. Multimodal AI Analysis with Gemini
+      const aiSummary = await fetchCallAiSummary({
+        leadId: targetLead.id,
+        leadName: targetLead.name,
+        course: targetLead.course,
+        country: targetLead.country,
+        duration: currentDuration,
+        recordingUrl: uploadRes.recordingUrl,
+      });
+
+      if (aiSummary) {
+        const suggestedOutcome = aiSummary.suggestedOutcome || "Interested";
+        setCallOutcome(suggestedOutcome);
+
+        let notesText = aiSummary.overview || `Phone call completed with ${targetLead.name} regarding ${targetLead.course}.`;
+        if (aiSummary.keyPoints && aiSummary.keyPoints.length > 0) {
+          notesText += `\n\nKey Highlights:\n` + aiSummary.keyPoints.map((kp: string) => `• ${kp}`).join("\n");
+        }
+        setCallNotes(notesText);
+
+        if (aiSummary.followUpDate) setScheduleFollowUpDate(aiSummary.followUpDate);
+        if (aiSummary.suggestedFollowUp) setFollowUpReason(aiSummary.suggestedFollowUp);
+
+        setPostCallData({
+          lead: targetLead,
+          duration: currentDuration,
+          recordingUrl: uploadRes.recordingUrl,
+          audioPreviewUrl: localUrl,
+          transcript: aiSummary.transcript || undefined,
+          aiSummary,
+        });
+
+        toast.success("Phone recording attached & Gemini AI analysis completed!", {
+          id: "native-audio-upload",
+          icon: "✨",
+        });
+      } else {
+        setPostCallData({
+          lead: targetLead,
+          duration: currentDuration,
+          recordingUrl: uploadRes.recordingUrl,
+          audioPreviewUrl: localUrl,
+        });
+        toast.success("Recording attached successfully!", { id: "native-audio-upload" });
+      }
+
+      setPostCallModalOpen(true);
+      setPresence("Active");
+    } catch (err: any) {
+      console.error("[Native Audio Error]", err);
+      toast.error("Failed to process phone recording", { id: "native-audio-upload" });
+    } finally {
+      setIsUploadingNativeAudio(false);
+      if (e.target) e.target.value = "";
+    }
   };
 
   // Save Post-Call Log & Schedule Next Call
@@ -1255,7 +1364,7 @@ export function TelecallerMobileDashboard() {
               </div>
 
               {/* End Call & Trigger AI Button */}
-              <div className="pt-2">
+              <div className="pt-2 space-y-2">
                 <Button
                   type="button"
                   onClick={handleEndCallAndSummarize}
@@ -1264,6 +1373,17 @@ export function TelecallerMobileDashboard() {
                 >
                   <PhoneCall className="size-4 rotate-135" />
                   <span>End Call &amp; Generate AI Summary ✨</span>
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => nativeFileInputRef.current?.click()}
+                  disabled={isUploadingNativeAudio}
+                  className="w-full h-11 border-indigo-200 bg-indigo-50/50 hover:bg-indigo-100/70 text-indigo-950 font-bold text-xs rounded-2xl gap-2 cursor-pointer transition-all"
+                >
+                  <FolderOpen className="size-4 text-indigo-600" />
+                  <span>Pick Phone Call Recording (.m4a / .mp3) 📁</span>
                 </Button>
               </div>
             </div>
@@ -1316,6 +1436,48 @@ export function TelecallerMobileDashboard() {
                 <span className="text-xs font-bold px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700 shadow-2xs">
                   {postCallData.lead.city || "Student"}
                 </span>
+              </div>
+
+              {/* Native Phone Call Recording Attachment Option */}
+              <div className="rounded-2xl border border-indigo-200/90 bg-gradient-to-br from-indigo-50/70 to-blue-50/50 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="size-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                      <FileAudio className="size-5" />
+                    </div>
+                    <div>
+                      <h5 className="text-xs font-bold text-slate-900">
+                        {attachedFileName ? "Native Recording Attached" : "Attach Phone Call Recording (.m4a / .mp3)"}
+                      </h5>
+                      <p className="text-[11px] text-slate-500">
+                        {attachedFileName ? attachedFileName : "Pick the 2-way call audio from your phone for Gemini AI analysis"}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => nativeFileInputRef.current?.click()}
+                    disabled={isUploadingNativeAudio}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl cursor-pointer shadow-xs gap-1.5 shrink-0"
+                  >
+                    {isUploadingNativeAudio ? (
+                      <>
+                        <Loader2 className="size-3.5 animate-spin" />
+                        <span>Analyzing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="size-3.5" />
+                        <span>{attachedFileName ? "Change" : "Select File"}</span>
+                      </>
+                    )}
+                  </Button>
+                </div>
+                <div className="flex items-center gap-1.5 text-[10px] text-slate-600 bg-white/80 rounded-lg px-2.5 py-1 border border-indigo-100">
+                  <span className="font-bold text-indigo-700">💡 Tip:</span>
+                  <span>Enable &quot;Auto Call Recording&quot; in phone dialer settings. Then pick the top file from Recent!</span>
+                </div>
               </div>
 
               {/* Attached Call Recording Player */}
@@ -1599,6 +1761,15 @@ export function TelecallerMobileDashboard() {
           </button>
         </div>
       </nav>
+
+      {/* Hidden file input for native phone audio recording selection */}
+      <input
+        ref={nativeFileInputRef}
+        type="file"
+        accept="audio/*,.m4a,.mp3,.wav,.aac,.amr,.ogg"
+        onChange={handleNativeAudioSelect}
+        className="hidden"
+      />
     </div>
   );
 }

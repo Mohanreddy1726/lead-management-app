@@ -193,6 +193,35 @@ export async function uploadCallRecording(
   }
 }
 
+export async function uploadNativeCallRecordingFile(
+  file: File,
+  leadId: string,
+  duration: string = "2m 00s"
+): Promise<{ recordingUrl: string; duration: string; filename: string } | null> {
+  try {
+    const formData = new FormData();
+    formData.append("audio", file, file.name);
+    formData.append("leadId", leadId);
+    formData.append("duration", duration);
+
+    const res = await fetch("/api/calls/recordings/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      recordingUrl: data.recordingUrl,
+      duration: data.duration || duration,
+      filename: data.filename || file.name,
+    };
+  } catch (err) {
+    console.error("[Native Audio Upload] Error:", err);
+    return null;
+  }
+}
+
 export async function fetchCallAiSummary(payload: {
   leadId: string;
   leadName: string;
@@ -200,6 +229,9 @@ export async function fetchCallAiSummary(payload: {
   country: string;
   transcript?: string;
   duration: string;
+  recordingUrl?: string;
+  audioBase64?: string;
+  audioMimeType?: string;
 }) {
   try {
     const res = await fetch("/api/calls/ai-summarize", {

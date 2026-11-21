@@ -5,8 +5,13 @@ import { toast } from "sonner";
 import { Modal, Field, inputClass, textareaClass, selectClass, PrimaryButton } from "./modal";
 import { callOutcomes } from "@/data/mock";
 import { logCall, getLeads, getTelecallers } from "@/services/api";
-import { CallAudioRecorder, uploadCallRecording, fetchCallAiSummary } from "@/lib/audio-recorder";
-import { Mic, Volume2, Sparkles, Loader2, StopCircle } from "lucide-react";
+import {
+  CallAudioRecorder,
+  uploadCallRecording,
+  uploadNativeCallRecordingFile,
+  fetchCallAiSummary,
+} from "@/lib/audio-recorder";
+import { Mic, Volume2, Sparkles, Loader2, StopCircle, Upload, FolderOpen } from "lucide-react";
 
 export function LogCallModal({
   open,
@@ -46,6 +51,57 @@ export function LogCallModal({
   const [uploadedRecordingUrl, setUploadedRecordingUrl] = useState<string | null>(null);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [aiSummary, setAiSummary] = useState<any>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [attachedFileName, setAttachedFileName] = useState("");
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsAiProcessing(true);
+    setAttachedFileName(file.name);
+    const targetId = initialLeadId || leadId;
+
+    try {
+      const localUrl = URL.createObjectURL(file);
+      setAudioUrl(localUrl);
+
+      const uploadRes = await uploadNativeCallRecordingFile(file, targetId, duration);
+      if (uploadRes?.recordingUrl) {
+        setUploadedRecordingUrl(uploadRes.recordingUrl);
+      }
+
+      const summary = await fetchCallAiSummary({
+        leadId: targetId,
+        leadName: targetLead?.name || "Student",
+        course: targetLead?.course || "MBBS Abroad",
+        country: targetLead?.country || "Kazakhstan",
+        duration: duration,
+        recordingUrl: uploadRes?.recordingUrl,
+      });
+
+      if (summary) {
+        setAiSummary(summary);
+        if (summary.suggestedOutcome) setOutcome(summary.suggestedOutcome);
+        if (summary.overview) {
+          let nText = summary.overview;
+          if (summary.keyPoints && summary.keyPoints.length > 0) {
+            nText += "\n\nKey Points:\n" + summary.keyPoints.map((kp: string) => `• ${kp}`).join("\n");
+          }
+          setNotes(nText);
+        }
+        if (summary.suggestedFollowUp) setNextAction(summary.suggestedFollowUp);
+        if (summary.followUpDate) setFollowUpDate(summary.followUpDate);
+      }
+      toast.success("Recording attached & summarized by Gemini AI!", { icon: "✨" });
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to process recording file");
+    } finally {
+      setIsAiProcessing(false);
+      if (e.target) e.target.value = "";
+    }
+  };
 
   useEffect(() => {
     let interval: any;
@@ -209,15 +265,34 @@ export function LogCallModal({
           </div>
 
           {!isRecording && !audioUrl && (
-            <button
-              type="button"
-              onClick={handleStartRecording}
-              className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-white hover:bg-slate-100 text-slate-800 font-semibold text-xs border border-slate-200 shadow-2xs transition-all cursor-pointer"
-            >
-              <Mic className="size-3.5 text-rose-600" />
-              <span>Start Microphone Recording</span>
-            </button>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={handleStartRecording}
+                className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-white hover:bg-slate-100 text-slate-800 font-semibold text-xs border border-slate-200 shadow-2xs transition-all cursor-pointer"
+              >
+                <Mic className="size-3.5 text-rose-600" />
+                <span>Record via Mic</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 font-semibold text-xs border border-indigo-200 shadow-2xs transition-all cursor-pointer"
+              >
+                <FolderOpen className="size-3.5 text-indigo-600" />
+                <span>Attach Phone File (.m4a)</span>
+              </button>
+            </div>
           )}
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="audio/*,.m4a,.mp3,.wav,.aac,.amr,.ogg"
+            onChange={handleFileUpload}
+            className="hidden"
+          />
 
           {isRecording && (
             <button

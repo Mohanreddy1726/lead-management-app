@@ -23,19 +23,35 @@ export async function POST(req: NextRequest) {
     }
 
     const cleanLeadId = leadId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const filename = `call_${cleanLeadId}_${Date.now()}.webm`;
+    
+    // Preserve audio extension (.m4a, .mp3, .wav, .webm, etc.)
+    const originalName = file.name || "recording.webm";
+    let ext = path.extname(originalName).toLowerCase();
+    if (!ext || ext.length < 2) {
+      if (file.type.includes("m4a") || file.type.includes("mp4") || file.type.includes("aac")) ext = ".m4a";
+      else if (file.type.includes("mp3") || file.type.includes("mpeg")) ext = ".mp3";
+      else if (file.type.includes("wav")) ext = ".wav";
+      else if (file.type.includes("ogg")) ext = ".ogg";
+      else ext = ".webm";
+    }
+
+    const filename = `call_${cleanLeadId}_${Date.now()}${ext}`;
     const filePath = path.join(recordingsDir, filename);
 
     fs.writeFileSync(filePath, buffer);
 
     const recordingUrl = `/recordings/${filename}`;
+    const mimeType = file.type || (ext === ".m4a" ? "audio/mp4" : ext === ".mp3" ? "audio/mp3" : ext === ".wav" ? "audio/wav" : "audio/webm");
 
     return NextResponse.json({
       success: true,
       recordingUrl,
       filename,
+      originalName,
+      mimeType,
       size: buffer.length,
       duration,
+      base64: buffer.length < 15 * 1024 * 1024 ? buffer.toString("base64") : undefined,
     });
   } catch (error: any) {
     console.error("[Audio Upload API] Error:", error);

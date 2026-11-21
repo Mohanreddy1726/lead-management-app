@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import fs from "fs";
+import path from "path";
 
 export async function POST(req: NextRequest) {
   try {
@@ -10,7 +12,33 @@ export async function POST(req: NextRequest) {
       country = "Kazakhstan",
       transcript = "",
       duration = "2m 30s",
+      recordingUrl = "",
     } = body;
+
+    let audioBase64: string | undefined = body.audioBase64;
+    let audioMimeType: string = body.audioMimeType || "audio/mp4";
+
+    // If audioBase64 was not passed directly, try reading from disk if recordingUrl is provided
+    if (!audioBase64 && recordingUrl) {
+      try {
+        const cleanPath = recordingUrl.replace(/^\/?recordings\//, "");
+        const filePath = path.join(process.cwd(), "public", "recordings", cleanPath);
+        if (fs.existsSync(filePath)) {
+          const stats = fs.statSync(filePath);
+          if (stats.size <= 15 * 1024 * 1024) {
+            const buf = fs.readFileSync(filePath);
+            audioBase64 = buf.toString("base64");
+            const ext = path.extname(filePath).toLowerCase();
+            if (ext === ".m4a") audioMimeType = "audio/mp4";
+            else if (ext === ".mp3") audioMimeType = "audio/mp3";
+            else if (ext === ".wav") audioMimeType = "audio/wav";
+            else if (ext === ".webm") audioMimeType = "audio/webm";
+          }
+        }
+      } catch (e) {
+        console.warn("[AI Summarize] Could not read recording file from disk:", e);
+      }
+    }
 
     const apiKey = process.env.GEMINI_API_KEY;
 
@@ -23,17 +51,35 @@ Context:
 - Course of Interest: ${course}
 - Target Country: ${country}
 - Call Duration: ${duration}
-- Spoken Conversation Transcript: "${transcript || "Discussed admissions eligibility, budget requirements, university fee packages, hostel amenities, and next documentation steps."}"
+${transcript ? `- Spoken Conversation Notes: "${transcript}"` : ""}
 
+Analyze the dialogue spoken by both the telecaller and the student/parent in this call.
 Provide your analysis strictly in valid JSON format matching this schema:
 {
   "overview": "2-3 concise sentences summarizing what was discussed and the student's disposition.",
+  "transcriptSummary": "Key dialogue summary of what both parties discussed.",
   "keyPoints": ["Bullet 1", "Bullet 2", "Bullet 3"],
   "sentiment": "High Interest" | "Moderate" | "Hesitant" | "Budget Issue" | "Comparing",
   "suggestedOutcome": "Interested" | "Follow-up" | "Parent Discussion" | "Sent Fee Details" | "Not Interested",
   "suggestedFollowUp": "Specific recommended next action (e.g. Share Semey University 5-yr fee breakdown on WhatsApp)",
-  "callbackDays": 1 or 2 (number of days from today for next callback)
+  "callbackDays": 1 or 2
 }`;
+
+        // Construct parts (multimodal audio + text)
+        const parts: any[] = [];
+        if (audioBase64) {
+          parts.push({
+            inlineData: {
+              mimeType: audioMimeType,
+              data: audioBase64,
+            },
+          });
+          parts.push({
+            text: `Please listen to the attached audio recording of this phone call. Understand both speakers carefully.\n\n${prompt}`,
+          });
+        } else {
+          parts.push({ text: prompt });
+        }
 
         const modelsToTry = [
           "gemini-3.5-flash-lite",
@@ -46,7 +92,7 @@ Provide your analysis strictly in valid JSON format matching this schema:
         for (const model of modelsToTry) {
           try {
             const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 10000);
+            const timer = setTimeout(() => controller.abort(), 20000);
 
             const geminiRes = await fetch(
               `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -55,7 +101,7 @@ Provide your analysis strictly in valid JSON format matching this schema:
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  contents: [{ parts: [{ text: prompt }] }],
+                  contents: [{ parts }],
                   generationConfig: { responseMimeType: "application/json" },
                 }),
               }
@@ -80,22 +126,23 @@ Provide your analysis strictly in valid JSON format matching this schema:
 
         if (parsed) {
           const tomorrow = new Date();
-            tomorrow.setDate(tomorrow.getDate() + (parsed.callbackDays || 1));
-            const followUpDateStr = tomorrow.toISOString().split("T")[0];
+          tomorrow.setDate(tomorrow.getDate() + (parsed.callbackDays || 1));
+          const followUpDateStr = tomorrow.toISOString().split("T")[0];
 
-            return NextResponse.json({
-              success: true,
-              aiPowered: true,
-              summary: {
-                overview: parsed.overview,
-                keyPoints: parsed.keyPoints || [],
-                sentiment: parsed.sentiment || "High Interest",
-                suggestedOutcome: parsed.suggestedOutcome || "Interested",
-                suggestedFollowUp: parsed.suggestedFollowUp || "Share detailed university brochure and fee breakdown",
-                followUpDate: followUpDateStr,
-              },
-            });
-          }
+          return NextResponse.json({
+            success: true,
+            aiPowered: true,
+            summary: {
+              overview: parsed.overview,
+              transcript: parsed.transcriptSummary || transcript,
+              keyPoints: parsed.keyPoints || [],
+              sentiment: parsed.sentiment || "High Interest",
+              suggestedOutcome: parsed.suggestedOutcome || "Interested",
+              suggestedFollowUp: parsed.suggestedFollowUp || "Share detailed university brochure and fee breakdown",
+              followUpDate: followUpDateStr,
+            },
+          });
+        }
       } catch (geminiErr) {
         console.warn("[AI Summarize] Gemini API warning, falling back to smart analyzer:", geminiErr);
       }
