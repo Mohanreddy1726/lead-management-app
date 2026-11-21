@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useSession } from "next-auth/react";
+import { useSession, signOut } from "next-auth/react";
 import {
   Phone,
   PhoneCall,
@@ -37,6 +37,7 @@ import {
   X,
   Send,
   Check,
+  LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -409,13 +410,22 @@ export function TelecallerMobileDashboard() {
                       <span className="size-2 rounded-full bg-slate-400" />
                       Shift Ended / Offline
                     </button>
+                    <div className="my-1 border-t border-slate-100" />
+                    <button
+                      type="button"
+                      onClick={() => signOut({ callbackUrl: "/login" })}
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-bold text-rose-600 hover:bg-rose-50 cursor-pointer transition-colors"
+                    >
+                      <LogOut className="size-3.5" />
+                      Sign Out
+                    </button>
                   </div>
                 )}
               </div>
             </div>
           </div>
 
-          {/* Right Action: Branch Toggle & Refresh */}
+          {/* Right Action: Branch Toggle, Refresh & Logout */}
           <div className="flex items-center gap-1.5 shrink-0">
             {canSwitchBranch ? (
               <button
@@ -447,6 +457,16 @@ export function TelecallerMobileDashboard() {
               title="Refresh Queue"
             >
               <RotateCcw className="size-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => signOut({ callbackUrl: "/login" })}
+              className="size-8 rounded-xl border border-rose-200 bg-rose-50/80 flex items-center justify-center text-rose-600 hover:text-rose-700 hover:bg-rose-100 transition cursor-pointer"
+              title="Sign Out"
+              aria-label="Sign Out"
+            >
+              <LogOut className="size-3.5" />
             </button>
           </div>
         </div>
@@ -1004,6 +1024,33 @@ export function TelecallerMobileDashboard() {
                   <span>Schedule parent Zoom counselling or office consultation.</span>
                 </li>
               </ul>
+            </div>
+
+            {/* Account & Session Sign Out Card */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="size-10 rounded-2xl bg-indigo-600 text-white font-bold text-sm flex items-center justify-center">
+                    {(callerName || "TC").slice(0, 2).toUpperCase()}
+                  </div>
+                  <div>
+                    <p className="font-bold text-xs text-slate-900">{callerName}</p>
+                    <p className="text-[11px] text-slate-500">{sessionUser?.email || "Counsellor"}</p>
+                  </div>
+                </div>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  {presence}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => signOut({ callbackUrl: "/login" })}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs border border-rose-200 transition-colors cursor-pointer shadow-2xs"
+              >
+                <LogOut className="size-4" />
+                <span>Sign Out of Lead.OS</span>
+              </button>
             </div>
           </div>
         )}

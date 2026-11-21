@@ -390,6 +390,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <LogOut className="size-3.5" />
           </button>
         </div>
+
+        {/* Dedicated Full-Width Mobile Logout Button */}
+        <button
+          onClick={() => signOut({ callbackUrl: "/login" })}
+          className="mt-2 w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs border border-rose-200 transition-colors cursor-pointer shadow-2xs"
+        >
+          <LogOut className="size-3.5" />
+          <span>Sign Out</span>
+        </button>
       </div>
     </div>
   );
@@ -710,6 +719,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 </div>
               )}
             </div>
+
+            {/* Mobile Quick Sign Out Button */}
+            <button
+              type="button"
+              onClick={() => signOut({ callbackUrl: "/login" })}
+              title="Sign out"
+              className="flex md:hidden p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+              aria-label="Sign Out"
+            >
+              <LogOut className="size-4 text-rose-500" />
+            </button>
           </div>
         </div>
       </header>
