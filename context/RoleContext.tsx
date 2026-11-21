@@ -16,32 +16,16 @@ const RoleContext = createContext<RoleContextType | undefined>(undefined);
 
 export function RoleProvider({ children }: { children: React.ReactNode }) {
   const { data: session } = useSession();
-  
-  // Base account role from session, defaulting to admin if not set
-  const sessionRole = ((session?.user as any)?.role?.toLowerCase() as AppRole) || "admin";
-  const actualRole: AppRole = ["admin", "manager", "telecaller"].includes(sessionRole)
-    ? sessionRole
-    : "admin";
+
+  // Base account role from authenticated session (defaults to least-privilege 'telecaller' if not signed in)
+  const userRole = ((session?.user as any)?.actualRole || (session?.user as any)?.role)?.toLowerCase();
+  const actualRole: AppRole =
+    userRole && ["admin", "manager", "telecaller"].includes(userRole)
+      ? (userRole as AppRole)
+      : "telecaller";
 
   // Current active viewing role
   const [currentRole, setCurrentRole] = useState<AppRole>(actualRole);
-
-  // Sync initial role when session loads
-  useEffect(() => {
-    const saved = localStorage.getItem("leados_view_role") as AppRole | null;
-    if (saved && ["admin", "manager", "telecaller"].includes(saved)) {
-      // Validate that saved role is permitted for actualRole
-      if (actualRole === "admin") {
-        setCurrentRole(saved);
-      } else if (actualRole === "manager" && (saved === "manager" || saved === "telecaller")) {
-        setCurrentRole(saved);
-      } else {
-        setCurrentRole(actualRole);
-      }
-    } else {
-      setCurrentRole(actualRole);
-    }
-  }, [actualRole]);
 
   // Determine which roles this user can switch to
   const availableRoles: AppRole[] = React.useMemo(() => {
@@ -53,6 +37,16 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
     }
     return ["telecaller"];
   }, [actualRole]);
+
+  // Sync role when session loads or changes
+  useEffect(() => {
+    const saved = localStorage.getItem("leados_view_role") as AppRole | null;
+    if (saved && availableRoles.includes(saved)) {
+      setCurrentRole(saved);
+    } else {
+      setCurrentRole(actualRole);
+    }
+  }, [actualRole, availableRoles]);
 
   const switchRole = (newRole: AppRole) => {
     if (availableRoles.includes(newRole)) {

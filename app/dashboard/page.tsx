@@ -75,10 +75,23 @@ export default function DashboardPage() {
   const { currentRole } = useRole();
 
   useEffect(() => {
-    if (status === "authenticated" && session?.user && (session.user as any).roleSelected === false) {
+    if (status === "unauthenticated") {
+      router.replace("/login");
+    } else if (status === "authenticated" && session?.user && (session.user as any).roleSelected === false) {
       router.push("/choose-role");
     }
   }, [status, session, router]);
+
+  if (status === "loading" || status === "unauthenticated") {
+    return (
+      <div className="min-h-[50vh] flex flex-col items-center justify-center p-4">
+        <div className="flex items-center gap-2 text-xs text-slate-400">
+          <div className="size-2 rounded-full bg-indigo-500 animate-ping" />
+          <span>Loading workspace…</span>
+        </div>
+      </div>
+    );
+  }
 
   // Render role-specific dashboard based on active role
   if (currentRole === "telecaller") {

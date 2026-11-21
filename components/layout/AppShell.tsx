@@ -59,7 +59,7 @@ const unreadNotifs = notifications.filter((n) => !n.read).length;
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const { actualRole, currentRole, availableRoles, switchRole } = useRole();
   const { branch, canSwitchBranch, switchBranch } = useBranch();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -69,6 +69,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Authentication guard: redirect unauthenticated visitors to /login
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.replace("/login");
+    }
+  }, [status, router]);
 
   // Subscribe to central store to react to real-time website lead captures
   useSyncExternalStore(store.subscribe, store.getSnapshot, () => 0);
@@ -118,15 +125,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const userName = session?.user?.name || currentUser.name;
-  const userEmail = session?.user?.email || "vennela@leados.com";
+  const userName = session?.user?.name || "User";
+  const userEmail = session?.user?.email || "";
   const userInitials =
     session?.user?.name
       ?.split(" ")
       .map((n) => n[0])
       .join("")
       .slice(0, 2)
-      .toUpperCase() || currentUser.initials;
+      .toUpperCase() ||
+    session?.user?.email?.slice(0, 2).toUpperCase() ||
+    "U";
 
   // Navigation configurations based on current active role
   const getNavSections = (): { title: string; items: NavItem[] }[] => {
@@ -384,6 +393,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </div>
     </div>
   );
+
+  if (status === "loading" || status === "unauthenticated") {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-4">
+        <div className="flex flex-col items-center gap-3">
+          <span className="text-3xl font-black tracking-tight text-white animate-pulse">
+            Lead<span className="text-indigo-400">.</span><span className="text-indigo-400">OS</span>
+          </span>
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <div className="size-2 rounded-full bg-indigo-500 animate-ping" />
+            <span>Verifying secure session…</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#f8fafc] flex">
