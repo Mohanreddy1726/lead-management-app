@@ -38,8 +38,15 @@ import {
   Send,
   Check,
   LogOut,
+  Mic,
+  MicOff,
+  Volume2,
+  Play,
+  Pause,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CallAudioRecorder, uploadCallRecording, fetchCallAiSummary } from "@/lib/audio-recorder";
 import {
   getLeads,
   getTelecallers,
@@ -147,6 +154,23 @@ export function TelecallerMobileDashboard() {
   const [scheduleFollowUpDate, setScheduleFollowUpDate] = useState("");
   const [followUpReason, setFollowUpReason] = useState("");
 
+  // Live Call Recording & Audio Visualizer State
+  const recorderRef = React.useRef<CallAudioRecorder | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [isAnalyzingAi, setIsAnalyzingAi] = useState(false);
+
+  // Post-Call Review & Callback Scheduler Dialog State
+  const [postCallModalOpen, setPostCallModalOpen] = useState(false);
+  const [postCallData, setPostCallData] = useState<{
+    lead: Lead;
+    duration: string;
+    recordingUrl?: string;
+    audioPreviewUrl?: string;
+    transcript?: string;
+    aiSummary?: any;
+  } | null>(null);
+
   // WhatsApp template modal state
   const [whatsAppLead, setWhatsAppLead] = useState<Lead | null>(null);
   const [whatsAppMessage, setWhatsAppMessage] = useState("");
@@ -207,14 +231,42 @@ export function TelecallerMobileDashboard() {
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
-  // Trigger Phone Call and launch in-call sheet
-  const handleStartCall = (lead: Lead) => {
+  // Audio level visualizer polling
+  useEffect(() => {
+    let animId: number;
+    const pollLevel = () => {
+      if (recorderRef.current && isRecording) {
+        setAudioLevel(recorderRef.current.getAudioLevel());
+        animId = requestAnimationFrame(pollLevel);
+      }
+    };
+    if (isRecording) {
+      animId = requestAnimationFrame(pollLevel);
+    }
+    return () => cancelAnimationFrame(animId);
+  }, [isRecording]);
+
+  // Trigger Phone Call, start audio recording, and launch in-call sheet
+  const handleStartCall = async (lead: Lead) => {
     setActiveCallLead(lead);
     setCallOutcome("Interested");
     setCallNotes("");
     setScheduleFollowUpDate("");
     setFollowUpReason("");
     setPresence("In Call");
+    setCallTimer(0);
+
+    // Initialize & start microphone recording
+    const recorder = new CallAudioRecorder();
+    recorderRef.current = recorder;
+    const started = await recorder.start();
+    if (started) {
+      setIsRecording(true);
+      toast.success(`Call recording active for ${lead.name}`, { icon: "🎙️" });
+    } else {
+      setIsRecording(false);
+      toast.info("Microphone unavailable or blocked; continuing call without audio capture.");
+    }
 
     // Standard mobile tel: URI triggers device phone dialer
     const cleanPhone = lead.phone.replace(/[^\d+]/g, "");
@@ -223,42 +275,118 @@ export function TelecallerMobileDashboard() {
     }
   };
 
-  // End Call & Log
-  const handleSaveAndNext = () => {
-    if (activeCallLead) {
-      const duration = formatTimer(callTimer);
-      logCall({
-        leadId: activeCallLead.id,
-        telecallerId: callerId,
-        outcome: callOutcome,
-        notes: callNotes.trim() || `Dialer call with ${activeCallLead.name}. Outcome: ${callOutcome}`,
-        duration,
-        nextAction: followUpReason || (callOutcome === "Interested" ? "Share fee structure & shortlist" : undefined),
-        followUpDate: scheduleFollowUpDate || undefined,
-      });
+  // End Call & Trigger AI Summarization
+  const handleEndCallAndSummarize = async () => {
+    if (!activeCallLead) return;
+    const currentLead = activeCallLead;
+    const currentDuration = formatTimer(callTimer);
 
-      toast.success(`Call logged for ${activeCallLead.name} (${callOutcome})`);
+    setIsAnalyzingAi(true);
 
-      // Find next lead in queue
-      const currentIndex = filteredQueue.findIndex((l) => l.id === activeCallLead.id);
-      const nextLead = filteredQueue[currentIndex + 1] || null;
+    let recResult: any = null;
+    let uploadedUrl: string | null = null;
+    let aiSummary: any = null;
 
-      if (nextLead) {
-        // Automatically queue next lead
-        handleStartCall(nextLead);
-      } else {
-        setActiveCallLead(null);
-        setPresence("Active");
+    if (recorderRef.current) {
+      try {
+        recResult = await recorderRef.current.stop();
+        setIsRecording(false);
+      } catch (err) {
+        console.warn("Error stopping audio recorder:", err);
       }
+    }
+
+    if (recResult?.blob) {
+      try {
+        uploadedUrl = await uploadCallRecording(recResult.blob, currentLead.id, currentDuration);
+      } catch (uploadErr) {
+        console.warn("Upload recording error:", uploadErr);
+      }
+    }
+
+    try {
+      aiSummary = await fetchCallAiSummary({
+        leadId: currentLead.id,
+        leadName: currentLead.name,
+        course: currentLead.course,
+        country: currentLead.country,
+        transcript: recResult?.transcript || "",
+        duration: currentDuration,
+      });
+    } catch (aiErr) {
+      console.warn("AI summary error:", aiErr);
+    }
+
+    // Pre-fill post call details from AI summary
+    const suggestedOutcome = aiSummary?.suggestedOutcome || "Interested";
+    setCallOutcome(suggestedOutcome);
+
+    let notesText = aiSummary?.overview || `Call completed with ${currentLead.name} regarding ${currentLead.course}.`;
+    if (aiSummary?.keyPoints && aiSummary.keyPoints.length > 0) {
+      notesText += `\n\nKey Points:\n` + aiSummary.keyPoints.map((kp: string) => `• ${kp}`).join("\n");
+    }
+    setCallNotes(notesText);
+
+    setScheduleFollowUpDate(aiSummary?.followUpDate || "");
+    setFollowUpReason(aiSummary?.suggestedFollowUp || `Callback regarding ${currentLead.country} admissions`);
+
+    setPostCallData({
+      lead: currentLead,
+      duration: currentDuration,
+      recordingUrl: uploadedUrl || undefined,
+      audioPreviewUrl: recResult?.url || uploadedUrl || undefined,
+      transcript: recResult?.transcript || undefined,
+      aiSummary: aiSummary || undefined,
+    });
+
+    setIsAnalyzingAi(false);
+    setActiveCallLead(null);
+    setPostCallModalOpen(true);
+    setPresence("Active");
+  };
+
+  // Save Post-Call Log & Schedule Next Call
+  const handleSavePostCall = () => {
+    if (!postCallData) return;
+    const { lead, duration, recordingUrl, transcript, aiSummary } = postCallData;
+
+    logCall({
+      leadId: lead.id,
+      telecallerId: callerId,
+      outcome: callOutcome,
+      notes: callNotes.trim() || `Call with ${lead.name}. Outcome: ${callOutcome}`,
+      duration,
+      nextAction: followUpReason || (callOutcome === "Interested" ? "Share fee structure & shortlist" : undefined),
+      followUpDate: scheduleFollowUpDate ? new Date(`${scheduleFollowUpDate}T11:00:00`).toISOString() : undefined,
+      recordingUrl,
+      transcript,
+      aiSummary,
+    });
+
+    toast.success(`Call logged and recording attached to ${lead.name}`, { icon: "✅" });
+
+    const finishedLeadId = lead.id;
+    setPostCallModalOpen(false);
+    setPostCallData(null);
+
+    // Queue next lead if available in queue
+    const currentIndex = filteredQueue.findIndex((l) => l.id === finishedLeadId);
+    const nextLead = filteredQueue[currentIndex + 1] || null;
+    if (nextLead) {
+      toast.info(`Next up: ${nextLead.name}`);
     }
   };
 
   const handleCloseCallModal = () => {
     if (activeCallLead && callTimer > 3) {
-      if (confirm("End call and save log before closing?")) {
-        handleSaveAndNext();
+      if (confirm("End call and generate AI summary before closing?")) {
+        handleEndCallAndSummarize();
         return;
       }
+    }
+    if (recorderRef.current) {
+      recorderRef.current.stop().catch(() => {});
+      setIsRecording(false);
     }
     setActiveCallLead(null);
     setPresence("Active");
@@ -1056,7 +1184,7 @@ export function TelecallerMobileDashboard() {
         )}
       </main>
 
-      {/* ── NATIVE IN-CALL & LOGGING DRAWER / MODAL ── */}
+      {/* ── 1. ACTIVE CALL IN-PROGRESS MODAL (LIVE AUDIO RECORDING) ── */}
       {activeCallLead && (
         <Dialog open={!!activeCallLead} onOpenChange={(open) => !open && handleCloseCallModal()}>
           <DialogContent className="max-w-md bg-white border border-slate-200 p-5 shadow-2xl rounded-3xl">
@@ -1066,35 +1194,176 @@ export function TelecallerMobileDashboard() {
                   <span className="size-3 rounded-full bg-emerald-500 animate-ping" />
                   <span>Call in Progress</span>
                 </DialogTitle>
-                <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-900 text-xs font-mono font-bold">
-                  <span>{formatTimer(callTimer)}</span>
+
+                {/* Live Call & Recording Badge */}
+                <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-50 border border-rose-200 text-rose-800 text-xs font-mono font-bold shadow-2xs">
+                  <span className="size-2 rounded-full bg-rose-600 animate-ping" />
+                  <span>{isRecording ? "REC" : "CALL"} {formatTimer(callTimer)}</span>
+                  {isRecording && (
+                    <div className="flex items-center gap-0.5 ml-1.5 h-3">
+                      {[40, 80, 100, 60, 90].map((h, i) => (
+                        <span
+                          key={i}
+                          className="w-0.5 bg-rose-600 rounded-full transition-all duration-75"
+                          style={{ height: `${Math.max(3, Math.round((h * (audioLevel || 20)) / 100))}%` }}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </DialogHeader>
 
-            <div className="space-y-3.5 pt-1">
+            <div className="space-y-4 pt-1">
               {/* Student Brief Card */}
-              <div className="rounded-2xl bg-indigo-50/70 border border-indigo-200/80 p-3 space-y-1.5 text-xs">
+              <div className="rounded-2xl bg-indigo-50/80 border border-indigo-200/90 p-3.5 space-y-1.5 text-xs">
                 <div className="flex justify-between items-start">
                   <div>
                     <h3 className="font-bold text-sm text-indigo-950">{activeCallLead.name}</h3>
                     <p className="font-mono text-indigo-800 font-semibold">{activeCallLead.phone}</p>
                   </div>
-                  <span className="text-[11px] font-bold bg-white text-indigo-800 px-2 py-0.5 rounded-md border border-indigo-200">
+                  <span className="text-[11px] font-bold bg-white text-indigo-800 px-2.5 py-0.5 rounded-md border border-indigo-200 shadow-2xs">
                     {activeCallLead.course} ({activeCallLead.country})
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-2 text-[11px] text-indigo-900 font-medium">
+                <div className="flex flex-wrap gap-2 text-[11px] text-indigo-900 font-medium pt-1">
                   {activeCallLead.neetScore && <span>NEET: <strong>{activeCallLead.neetScore}</strong></span>}
                   {activeCallLead.budget && <span>Budget: <strong>{activeCallLead.budget}</strong></span>}
                   {activeCallLead.parentName && <span>Parent: <strong>{activeCallLead.parentName}</strong></span>}
                 </div>
               </div>
 
-              {/* Call Outcome Buttons Grid (1-Tap Selection) */}
+              {/* Recording Status Pill */}
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                <div className="flex items-center gap-2 text-slate-700">
+                  <Mic className={cn("size-4", isRecording ? "text-rose-600 animate-pulse" : "text-slate-400")} />
+                  <span>{isRecording ? "Microphone capturing conversation" : "Audio capture offline"}</span>
+                </div>
+                <span className="text-[10px] font-semibold text-slate-500">
+                  {isRecording ? "Auto-saving recording" : "Manual call mode"}
+                </span>
+              </div>
+
+              {/* In-Call Talking Points Cheat Sheet */}
+              <div className="rounded-xl border border-slate-100 bg-slate-50/50 p-3 space-y-1.5">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Key Talking Points:</p>
+                <ul className="text-xs text-slate-700 space-y-1">
+                  <li>• Confirm student&apos;s 12th PCB eligibility and NEET qualification.</li>
+                  <li>• Highlight tuition, hostel &amp; Indian food packages for {activeCallLead.country}.</li>
+                  <li>• Offer to send the university fee brochure on WhatsApp.</li>
+                </ul>
+              </div>
+
+              {/* End Call & Trigger AI Button */}
+              <div className="pt-2">
+                <Button
+                  type="button"
+                  onClick={handleEndCallAndSummarize}
+                  disabled={isAnalyzingAi}
+                  className="w-full h-12 bg-gradient-to-r from-rose-600 via-indigo-600 to-violet-600 hover:from-rose-700 hover:to-violet-700 text-white font-black text-sm rounded-2xl shadow-lg gap-2 cursor-pointer transition-all active:scale-[0.98]"
+                >
+                  <PhoneCall className="size-4 rotate-135" />
+                  <span>End Call &amp; Generate AI Summary ✨</span>
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* ── 2. AI ANALYZING SPINNER OVERLAY ── */}
+      {isAnalyzingAi && (
+        <Dialog open={isAnalyzingAi}>
+          <DialogContent className="max-w-xs bg-white border border-slate-200 p-6 shadow-2xl rounded-3xl text-center">
+            <div className="flex flex-col items-center justify-center space-y-3 py-2">
+              <div className="size-14 rounded-2xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600 shadow-xs">
+                <Sparkles className="size-7 animate-spin" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-bold text-sm text-slate-900">Synthesizing Call Recording</h3>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  AI is transcribing speech, evaluating student disposition, and extracting next actions…
+                </p>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* ── 3. POST-CALL REVIEW & NEXT CALL SCHEDULER DIALOG ── */}
+      {postCallModalOpen && postCallData && (
+        <Dialog open={postCallModalOpen} onOpenChange={(open) => !open && setPostCallModalOpen(false)}>
+          <DialogContent className="max-w-lg bg-white border border-slate-200 p-5 shadow-2xl rounded-3xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <div className="flex items-center justify-between pr-2">
+                <DialogTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <Sparkles className="size-5 text-indigo-600" />
+                  <span>Log Call &amp; Schedule Next Action</span>
+                </DialogTitle>
+                <span className="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700">
+                  {postCallData.duration}
+                </span>
+              </div>
+            </DialogHeader>
+
+            <div className="space-y-4 pt-1">
+              {/* Student Header */}
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                <div>
+                  <h4 className="font-bold text-sm text-slate-900">{postCallData.lead.name}</h4>
+                  <p className="text-xs text-slate-500">{postCallData.lead.phone} · {postCallData.lead.course} ({postCallData.lead.country})</p>
+                </div>
+                <span className="text-xs font-bold px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700 shadow-2xs">
+                  {postCallData.lead.city || "Student"}
+                </span>
+              </div>
+
+              {/* Attached Call Recording Player */}
+              {postCallData.audioPreviewUrl && (
+                <div className="rounded-2xl bg-slate-900 text-white p-3 space-y-2 shadow-sm">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold flex items-center gap-1.5 text-indigo-300">
+                      <Volume2 className="size-3.5" /> Call Recording
+                    </span>
+                    <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1">
+                      <Check className="size-3" /> Attached to Lead Profile
+                    </span>
+                  </div>
+                  <audio controls className="w-full h-8 rounded-lg" src={postCallData.audioPreviewUrl} preload="auto" />
+                </div>
+              )}
+
+              {/* AI Call Intelligence Summary Card */}
+              {postCallData.aiSummary && (
+                <div className="rounded-2xl bg-gradient-to-br from-indigo-50/90 to-purple-50/90 border border-indigo-200/90 p-3.5 space-y-2.5 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-black text-indigo-950 flex items-center gap-1.5 text-xs">
+                      <Sparkles className="size-3.5 text-indigo-600" /> AI Call Analysis
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-600 text-white shadow-2xs">
+                      {postCallData.aiSummary.sentiment || "High Intent"}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-800 leading-relaxed font-medium">
+                    {postCallData.aiSummary.overview}
+                  </p>
+                  {postCallData.aiSummary.keyPoints && postCallData.aiSummary.keyPoints.length > 0 && (
+                    <div className="space-y-1 pt-1.5 border-t border-indigo-100">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-900">Key Highlights:</p>
+                      <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-slate-700">
+                        {postCallData.aiSummary.keyPoints.map((kp: string, idx: number) => (
+                          <li key={idx}>{kp}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Call Outcome Selection */}
               <div className="space-y-1.5">
                 <label className="block text-xs font-bold text-slate-800">
-                  Select Call Outcome *
+                  Call Outcome *
                 </label>
                 <div className="grid grid-cols-2 gap-1.5">
                   {CALL_OUTCOMES.map((item) => (
@@ -1116,44 +1385,34 @@ export function TelecallerMobileDashboard() {
                 </div>
               </div>
 
-              {/* Quick Note Snippets */}
+              {/* Conversation Notes (Pre-filled with AI Summary) */}
               <div className="space-y-1">
-                <label className="block text-[11px] font-bold text-slate-600">
-                  Quick Remark Chips (Tap to add):
+                <label className="block text-xs font-bold text-slate-800">
+                  Call Notes (Pre-filled by AI)
                 </label>
-                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto no-scrollbar">
-                  {QUICK_NOTES.map((snippet) => (
-                    <button
-                      key={snippet}
-                      type="button"
-                      onClick={() => {
-                        setCallNotes((prev) => (prev ? `${prev}. ${snippet}` : snippet));
-                      }}
-                      className="rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-700 cursor-pointer"
-                    >
-                      + {snippet}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Custom Notes input */}
-              <div>
                 <textarea
-                  rows={2}
+                  rows={3}
                   value={callNotes}
                   onChange={(e) => setCallNotes(e.target.value)}
-                  placeholder="Record specific student objections, discussion points, or parent remarks…"
+                  placeholder="Review or edit call notes…"
                   className="w-full rounded-xl border border-slate-300 p-2.5 text-xs text-slate-900 outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 placeholder:text-slate-400"
                 />
               </div>
 
-              {/* Follow-up Date (if Outcome requires callback) */}
-              {(callOutcome === "Follow-up" || callOutcome === "Parent Discussion" || callOutcome === "Busy / Call Later") && (
-                <div className="grid grid-cols-2 gap-2 p-2.5 rounded-xl bg-amber-50 border border-amber-200">
+              {/* ── SCHEDULE NEXT CALL (CALLBACK) SECTION ── */}
+              <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                    <CalendarClock className="size-3.5 text-amber-700" />
+                    <span>Schedule Next Call / Callback</span>
+                  </span>
+                  <span className="text-[10px] font-semibold text-amber-800">AI Suggested</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[10px] font-bold text-amber-900 mb-1">
-                      Schedule Callback Date *
+                      Next Call Date *
                     </label>
                     <input
                       type="date"
@@ -1164,7 +1423,7 @@ export function TelecallerMobileDashboard() {
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold text-amber-900 mb-1">
-                      Callback Reason
+                      Action / Agenda
                     </label>
                     <input
                       type="text"
@@ -1175,7 +1434,7 @@ export function TelecallerMobileDashboard() {
                     />
                   </div>
                 </div>
-              )}
+              </div>
 
               {/* Save & Action Buttons */}
               <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-200">
@@ -1183,20 +1442,23 @@ export function TelecallerMobileDashboard() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={handleCloseCallModal}
+                  onClick={() => {
+                    setPostCallModalOpen(false);
+                    setPostCallData(null);
+                  }}
                   className="border-slate-300 text-slate-700 text-xs cursor-pointer"
                 >
-                  Cancel
+                  Discard
                 </Button>
 
                 <Button
                   type="button"
                   size="sm"
-                  onClick={handleSaveAndNext}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs gap-1.5 shadow-md cursor-pointer flex-1"
+                  onClick={handleSavePostCall}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs gap-1.5 shadow-md cursor-pointer flex-1 py-2.5 h-auto rounded-xl"
                 >
                   <Check className="size-4" />
-                  Save &amp; Next Lead
+                  Save Call Log &amp; Schedule Callback
                 </Button>
               </div>
             </div>

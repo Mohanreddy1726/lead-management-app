@@ -528,6 +528,15 @@ export function logCall(input: {
   duration?: string;
   nextAction?: string;
   followUpDate?: string;
+  recordingUrl?: string;
+  transcript?: string;
+  aiSummary?: {
+    overview: string;
+    keyPoints?: string[];
+    sentiment?: string;
+    suggestedOutcome?: string;
+    suggestedFollowUp?: string;
+  };
 }): CallLog {
   const lead = getLeadById(input.leadId);
   const telecallerId = input.telecallerId || lead?.assignedTo || telecallers[0]?.id || "tc-1";
@@ -542,6 +551,9 @@ export function logCall(input: {
     outcome: input.outcome,
     notes: input.notes,
     nextAction: input.nextAction,
+    recordingUrl: input.recordingUrl,
+    transcript: input.transcript,
+    aiSummary: input.aiSummary,
   };
 
   calls.unshift(newCall);
@@ -571,11 +583,20 @@ export function logCall(input: {
   }
 
   // Add timeline entry
+  const meta: Record<string, string> = {
+    duration,
+    outcome: input.outcome,
+  };
+  if (input.recordingUrl) meta.recordingUrl = input.recordingUrl;
+  if (input.aiSummary?.overview) meta.aiSummary = input.aiSummary.overview;
+  if (input.aiSummary?.sentiment) meta.sentiment = input.aiSummary.sentiment;
+
   addTimelineEvent(input.leadId, {
     type: "call",
-    title: `Call Logged · ${input.outcome}`,
+    title: input.recordingUrl ? `Recorded Call · ${input.outcome}` : `Call Logged · ${input.outcome}`,
     detail: `${input.notes || "Call completed"} (Duration: ${duration})`,
     actor: caller?.name || "Telecaller",
+    meta,
   });
 
   // Schedule follow-up if requested
@@ -672,7 +693,7 @@ export function rescheduleFollowUp(id: string, newDateIso: string): boolean {
 // ── TIMELINE ─────────────────────────────────────────────────────────
 export function addTimelineEvent(
   leadId: string,
-  event: { type: string; title: string; detail?: string; actor?: string },
+  event: { type: string; title: string; detail?: string; actor?: string; meta?: Record<string, any> },
 ) {
   const list = getTimeline(leadId);
   const newEvt: TimelineEvent = {
@@ -683,6 +704,7 @@ export function addTimelineEvent(
     title: event.title,
     detail: event.detail,
     actor: event.actor || "User",
+    meta: event.meta,
   };
   list.unshift(newEvt);
   emit();

@@ -122,6 +122,15 @@ export interface CallLog {
   outcome: string;
   notes: string;
   nextAction?: string;
+  recordingUrl?: string;
+  transcript?: string;
+  aiSummary?: {
+    overview: string;
+    keyPoints?: string[];
+    sentiment?: string;
+    suggestedOutcome?: string;
+    suggestedFollowUp?: string;
+  };
 }
 
 export interface FollowUp {

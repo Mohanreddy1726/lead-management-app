@@ -540,6 +540,22 @@ function LeadDetailContent({ params }: { params: Promise<{ id: string }> }) {
                       {evt.detail && (
                         <p className="text-xs text-muted-foreground leading-relaxed">{evt.detail}</p>
                       )}
+                      {evt.meta?.recordingUrl && (
+                        <div className="mt-2 rounded-xl bg-slate-900 text-white p-3 space-y-2 shadow-sm max-w-lg">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-bold flex items-center gap-1.5 text-indigo-300">
+                              <Sparkles className="size-3.5" /> Call Recording Replay
+                            </span>
+                            <span className="font-mono text-slate-400 text-[11px]">{evt.meta.duration}</span>
+                          </div>
+                          <audio controls className="w-full h-8" preload="none" src={evt.meta.recordingUrl} />
+                          {evt.meta.aiSummary && (
+                            <div className="rounded-lg bg-white/10 p-2 text-xs text-slate-200">
+                              <strong className="text-indigo-300">AI Summary:</strong> {evt.meta.aiSummary}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       {evt.actor && (
                         <p className="text-[11px] text-primary/80 font-medium">Logged by: {evt.actor}</p>
                       )}
@@ -612,6 +628,45 @@ function LeadDetailContent({ params }: { params: Promise<{ id: string }> }) {
                         <p className="text-xs text-indigo-600 font-semibold">
                           Next Action: {c.nextAction}
                         </p>
+                      )}
+                      {c.recordingUrl && (
+                        <div className="mt-2.5 rounded-2xl bg-slate-900 text-white p-3 space-y-2 shadow-sm max-w-lg">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-bold flex items-center gap-1.5 text-indigo-300">
+                              <Sparkles className="size-3.5" /> Call Recording Replay
+                            </span>
+                            <a
+                              href={c.recordingUrl}
+                              download
+                              className="text-[11px] text-slate-400 hover:text-indigo-300 font-mono underline"
+                            >
+                              Download Audio
+                            </a>
+                          </div>
+                          <audio controls className="w-full h-8" preload="none" src={c.recordingUrl} />
+                          {c.aiSummary?.overview && (
+                            <div className="rounded-xl bg-white/10 p-2.5 text-xs text-slate-200 space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="font-bold text-indigo-300 flex items-center gap-1">
+                                  <span>AI Intelligence Summary</span>
+                                </span>
+                                {c.aiSummary.sentiment && (
+                                  <span className="text-[10px] font-semibold px-2 py-0.2 bg-indigo-500/30 text-indigo-200 rounded-full border border-indigo-400/30">
+                                    {c.aiSummary.sentiment}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="leading-relaxed text-[11px]">{c.aiSummary.overview}</p>
+                              {c.aiSummary.keyPoints && c.aiSummary.keyPoints.length > 0 && (
+                                <ul className="list-disc pl-4 space-y-0.5 text-[10px] text-slate-300 pt-1">
+                                  {c.aiSummary.keyPoints.map((kp: string, idx: number) => (
+                                    <li key={idx}>{kp}</li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                     <span className="text-xs text-muted-foreground">
