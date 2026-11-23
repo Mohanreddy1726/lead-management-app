@@ -17,6 +17,7 @@ import {
   FileText,
   RefreshCw,
   UserCheck,
+  Phone,
 } from "lucide-react";
 
 import { SourceBadge, StageBadge, StatusBadge } from "@/components/shared/badges";
@@ -32,6 +33,7 @@ import {
   getSavedViews,
   getTelecallers,
   getLeads,
+  getLeadContactCount,
   store,
   syncLeadsFromDb,
 } from "@/services/api";
@@ -661,7 +663,19 @@ export function LeadTable({
                         )}
                         {visible("Stage") && (
                           <td className="px-3 py-3">
-                            <StageBadge value={l.stage} />
+                            <div className="flex flex-col gap-1 items-start">
+                              <StageBadge value={l.stage} />
+                              {getLeadContactCount(l.id) === 0 ? (
+                                <span className="inline-flex items-center gap-1 text-[10px] text-blue-600 font-semibold bg-blue-50 px-1.5 py-0.5 rounded">
+                                  0 calls
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded">
+                                  <Phone className="size-2.5 fill-emerald-600 text-emerald-600" />
+                                  {getLeadContactCount(l.id) === 1 ? "1 call" : `${getLeadContactCount(l.id)} calls`}
+                                </span>
+                              )}
+                            </div>
                           </td>
                         )}
                         {visible("Status") && (
@@ -751,9 +765,18 @@ export function LeadTable({
                       )}
                     </div>
 
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <StageBadge value={l.stage} />
                       <StatusBadge value={l.status} />
+                      {getLeadContactCount(l.id) === 0 ? (
+                        <span className="text-[10px] text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded font-bold">
+                          0 calls
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded font-bold">
+                          {getLeadContactCount(l.id) === 1 ? "1 call" : `${getLeadContactCount(l.id)} calls`}
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
                       <span>

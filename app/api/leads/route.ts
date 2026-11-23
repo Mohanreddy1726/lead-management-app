@@ -83,6 +83,8 @@ export async function GET(req: NextRequest) {
       budget: doc.budget,
       parentName: doc.parentName,
       branch: doc.branch || "mbbs",
+      contactCount: doc.contactCount ?? 0,
+      lastContactedAt: doc.lastContactedAt ? new Date(doc.lastContactedAt).toISOString() : null,
       attribution: doc.attribution,
       createdAt: doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString(),
       updatedAt: doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString(),
@@ -189,6 +191,15 @@ export async function PATCH(req: NextRequest) {
     }
     if (stage) {
       updateFields.stage = stage;
+    }
+    if (body.status) {
+      updateFields.status = body.status;
+    }
+    if (body.contactCount !== undefined) {
+      updateFields.contactCount = body.contactCount;
+    }
+    if (body.lastContactedAt) {
+      updateFields.lastContactedAt = body.lastContactedAt;
     }
 
     const result = await LeadModel.updateMany({ $or: filter }, { $set: updateFields });

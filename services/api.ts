@@ -161,6 +161,12 @@ export const getLeads = (branch?: Branch) => {
 
 export const getLeadById = (id: string) => leads.find((l) => l.id === id) ?? null;
 
+export const getLeadContactCount = (leadId: string): number => {
+  const lead = getLeadById(leadId);
+  const callCount = calls.filter((c) => c.leadId === leadId).length;
+  return Math.max(lead?.contactCount ?? 0, callCount);
+};
+
 export const getTelecallers = (branch?: Branch) =>
   branch ? telecallers.filter((t) => t.branch === branch) : telecallers;
 
@@ -567,18 +573,45 @@ export function logCall(input: {
     }
   }
 
-  // Update lead stage / status
+  // Update lead stage / status / contact count
   if (lead) {
+    lead.contactCount = (lead.contactCount || 0) + 1;
+    lead.lastContactedAt = new Date().toISOString();
+
+    let newStage = lead.stage;
+    let newStatus = lead.status;
+
     if (lead.stage === "New" || lead.stage === "Assigned") {
-      lead.stage = "Contacted";
+      newStage = "Contacted";
     }
     if (input.outcome === "Interested") {
-      lead.stage = "Interested";
-      lead.status = "Interested";
+      newStage = "Interested";
+      newStatus = "Interested";
     } else if (input.outcome === "Not Interested") {
-      lead.status = "Not Interested";
-    } else if (input.outcome === "Connected") {
-      lead.status = "Contacted";
+      newStatus = "Not Interested";
+    } else if (input.outcome === "Follow-up") {
+      if (newStage === "New" || newStage === "Assigned") newStage = "Contacted";
+      newStatus = "Follow-up";
+    } else {
+      if (newStatus === "New") newStatus = "Contacted";
+      if (newStage === "New" || newStage === "Assigned") newStage = "Contacted";
+    }
+
+    lead.stage = newStage;
+    lead.status = newStatus;
+
+    if (typeof window !== "undefined") {
+      fetch("/api/leads", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          leadIds: [lead.id],
+          stage: lead.stage,
+          status: lead.status,
+          contactCount: lead.contactCount,
+          lastContactedAt: lead.lastContactedAt,
+        }),
+      }).catch((e) => console.warn("[API] Sync lead update error:", e));
     }
   }
 

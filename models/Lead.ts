@@ -24,6 +24,8 @@ export interface ILeadDocument extends Document {
   budget?: string;
   parentName?: string;
   branch: Branch;
+  contactCount?: number;
+  lastContactedAt?: Date | null;
   attribution?: {
     adSet?: string;
     ad?: string;
@@ -102,6 +104,8 @@ const LeadSchema: Schema<ILeadDocument> = new Schema(
     neetScore: { type: Number },
     budget: { type: String },
     parentName: { type: String },
+    contactCount: { type: Number, default: 0 },
+    lastContactedAt: { type: Date, default: null },
     branch: {
       type: String,
       enum: ["mbbs", "masters"],

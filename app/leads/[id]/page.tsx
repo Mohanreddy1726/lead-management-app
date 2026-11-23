@@ -214,6 +214,17 @@ function LeadDetailContent({ params }: { params: Promise<{ id: string }> }) {
                   {lead.name}
                 </h1>
                 <ScoreBadge score={lead.score} showBand={true} />
+                {calls.length === 0 ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 border border-blue-200 px-2.5 py-0.5 text-xs font-bold text-blue-700">
+                    <span className="size-1.5 rounded-full bg-blue-500 animate-pulse" />
+                    Uncontacted (0 Calls)
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-300 px-2.5 py-0.5 text-xs font-bold text-emerald-800">
+                    <Phone className="size-3 fill-emerald-600 text-emerald-600" />
+                    {calls.length === 1 ? "Contacted 1 time" : `Contacted ${calls.length} times`}
+                  </span>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">

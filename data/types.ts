@@ -68,6 +68,8 @@ export interface Lead {
   parentName?: string;
   attribution: Attribution;
   branch?: Branch;
+  contactCount?: number;
+  lastContactedAt?: string | null;
 }
 
 export type MemberPresence = "Active" | "On Break" | "Offline" | "Follow-up" | "Counselling" | "In Call";

@@ -66,6 +66,7 @@ import {
   store,
   syncLeadsFromDb,
   syncTeamFromDb,
+  getLeadContactCount,
 } from "@/services/api";
 import { SourceBadge, StageBadge, StatusBadge, ScoreBadge } from "@/components/shared/badges";
 import { Button } from "@/components/ui/button";
@@ -123,6 +124,9 @@ export function TelecallerMobileDashboard() {
   const callerName = loggedInCaller?.name || sessionUser?.name || "Admissions Counsellor";
   const callerId = loggedInCaller?.id || (sessionUser as any)?.id || "tc-1";
 
+  // Real-time store reactivity
+  useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+
   // Data pools
   const leads = getLeads(branch);
   const myAssignedLeads = useMemo(
@@ -130,6 +134,39 @@ export function TelecallerMobileDashboard() {
     [leads, callerName, callerId]
   );
   const activeQueueLeads = myAssignedLeads.length > 0 ? myAssignedLeads : leads;
+
+  // Uncontacted vs Contacted sets
+  const uncontactedLeads = useMemo(
+    () =>
+      activeQueueLeads.filter((l) => {
+        const count = getLeadContactCount(l.id);
+        return (
+          count === 0 &&
+          l.stage !== "Interested" &&
+          l.status !== "Not Interested" &&
+          l.stage !== "Converted" &&
+          l.stage !== "Admission"
+        );
+      }),
+    [activeQueueLeads]
+  );
+
+  const contactedLeads = useMemo(
+    () =>
+      activeQueueLeads.filter((l) => {
+        const count = getLeadContactCount(l.id);
+        return (
+          count > 0 ||
+          l.stage === "Contacted" ||
+          l.stage === "Interested" ||
+          l.status === "Follow-up" ||
+          l.status === "Not Interested" ||
+          l.stage === "Admission" ||
+          l.stage === "Converted"
+        );
+      }),
+    [activeQueueLeads]
+  );
 
   const allFollowUps = getFollowUps(branch);
   const myFollowUps = allFollowUps.filter(
@@ -148,8 +185,8 @@ export function TelecallerMobileDashboard() {
   // Active Mobile View Tab: 'queue' | 'followups' | 'leads' | 'history' | 'targets'
   const [activeTab, setActiveTab] = useState<"queue" | "followups" | "leads" | "history" | "targets">("queue");
 
-  // Queue Filter Chip: 'all' | 'today' | 'hot' | 'neet' | 'uncontacted'
-  const [queueFilter, setQueueFilter] = useState<"all" | "today" | "hot" | "neet" | "uncontacted">("all");
+  // Queue Filter Chip: 'pending' (To Call) | 'contacted' | 'today' | 'hot' | 'all'
+  const [queueFilter, setQueueFilter] = useState<"pending" | "contacted" | "today" | "hot" | "all">("pending");
 
   // Quick Mobile Search Query
   const [searchQuery, setSearchQuery] = useState("");
@@ -479,10 +516,12 @@ export function TelecallerMobileDashboard() {
     setPostCallData(null);
 
     // Queue next lead if available in queue
-    const currentIndex = filteredQueue.findIndex((l) => l.id === finishedLeadId);
-    const nextLead = filteredQueue[currentIndex + 1] || null;
+    const remaining = filteredQueue.filter((l) => l.id !== finishedLeadId);
+    const nextLead = remaining[0] || null;
     if (nextLead) {
-      toast.info(`Next up: ${nextLead.name}`);
+      toast.info(`Next up: ${nextLead.name} (${nextLead.course})`, { icon: "🎯" });
+    } else {
+      toast.success("Awesome work! You completed all calls in this queue!", { icon: "🎉" });
     }
   };
 
@@ -524,17 +563,57 @@ export function TelecallerMobileDashboard() {
 
   // Filtered Queue computation
   const filteredQueue = useMemo(() => {
-    let list = activeQueueLeads;
+    let list = [...activeQueueLeads];
 
     // Apply queue filter chips
-    if (queueFilter === "today") {
-      list = list.filter((l) => l.nextFollowUp || l.stage === "New" || l.stage === "Assigned");
+    if (queueFilter === "pending") {
+      list = list.filter((l) => {
+        const count = getLeadContactCount(l.id);
+        const hasFollowUpToday = Boolean(l.nextFollowUp);
+        return (
+          (count === 0 &&
+            l.stage !== "Interested" &&
+            l.status !== "Not Interested" &&
+            l.stage !== "Converted" &&
+            l.stage !== "Admission") ||
+          hasFollowUpToday
+        );
+      });
+      list.sort((a, b) => (b.score || 0) - (a.score || 0));
+    } else if (queueFilter === "contacted") {
+      list = list.filter((l) => {
+        const count = getLeadContactCount(l.id);
+        return (
+          count > 0 ||
+          l.stage === "Contacted" ||
+          l.stage === "Interested" ||
+          l.status === "Follow-up" ||
+          l.status === "Not Interested" ||
+          l.stage === "Admission" ||
+          l.stage === "Converted"
+        );
+      });
+      list.sort((a, b) => {
+        if (a.lastContactedAt && b.lastContactedAt) {
+          return new Date(b.lastContactedAt).getTime() - new Date(a.lastContactedAt).getTime();
+        }
+        return (b.score || 0) - (a.score || 0);
+      });
+    } else if (queueFilter === "today") {
+      list = list.filter((l) => Boolean(l.nextFollowUp) || l.stage === "New" || l.stage === "Assigned");
+      list.sort((a, b) => (b.score || 0) - (a.score || 0));
     } else if (queueFilter === "hot") {
       list = list.filter((l) => l.score >= 70 || l.tags?.includes("Hot") || l.tags?.includes("Urgent"));
-    } else if (queueFilter === "neet") {
-      list = list.filter((l) => (l.neetScore && l.neetScore >= 350) || l.tags?.includes("NEET Qualified"));
-    } else if (queueFilter === "uncontacted") {
-      list = list.filter((l) => l.stage === "New" || l.stage === "Assigned");
+      list.sort((a, b) => (b.score || 0) - (a.score || 0));
+    } else if (queueFilter === "all") {
+      // Uncontacted first, then highest score
+      list.sort((a, b) => {
+        const countA = getLeadContactCount(a.id);
+        const countB = getLeadContactCount(b.id);
+        if (countA === 0 && countB > 0) return -1;
+        if (countA > 0 && countB === 0) return 1;
+        return (b.score || 0) - (a.score || 0);
+      });
     }
 
     // Apply text search
@@ -551,7 +630,7 @@ export function TelecallerMobileDashboard() {
   }, [activeQueueLeads, queueFilter, searchQuery]);
 
   // Priority "Up Next" Lead
-  const nextLeadToCall = filteredQueue[0] || activeQueueLeads[0];
+  const nextLeadToCall = filteredQueue[0] || null;
 
   // Daily target metrics
   const defaultTargets = [
@@ -759,7 +838,10 @@ export function TelecallerMobileDashboard() {
 
           {/* Card 2: Queue */}
           <div
-            onClick={() => setActiveTab("queue")}
+            onClick={() => {
+              setActiveTab("queue");
+              setQueueFilter("pending");
+            }}
             className="rounded-2xl border border-slate-200 bg-white p-3 shadow-2xs cursor-pointer active:scale-98 transition"
           >
             <div className="flex items-center justify-between text-xs text-slate-700 font-bold">
@@ -767,11 +849,11 @@ export function TelecallerMobileDashboard() {
               <Users className="size-3.5 text-slate-500" />
             </div>
             <div className="mt-1 flex items-baseline gap-1.5">
-              <span className="text-xl font-black text-slate-900">{filteredQueue.length}</span>
-              <span className="text-xs text-emerald-600 font-bold">Active</span>
+              <span className="text-xl font-black text-slate-900">{uncontactedLeads.length}</span>
+              <span className="text-xs text-indigo-600 font-bold">To Call</span>
             </div>
             <div className="mt-2 text-[10px] text-slate-500 font-medium truncate">
-              {myAssignedLeads.length} leads assigned to you
+              {contactedLeads.length} contacted · {activeQueueLeads.length} total
             </div>
           </div>
 
@@ -824,9 +906,17 @@ export function TelecallerMobileDashboard() {
                 <Sparkles className="size-3.5 text-amber-400" />
                 <span>Next Call Priority</span>
               </div>
-              <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] text-white">
-                Score: {nextLeadToCall.score}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="rounded-full bg-white/20 px-2.5 py-0.5 text-[10px] text-white font-bold flex items-center gap-1">
+                  <Phone className="size-2.5 fill-white text-white" />
+                  {getLeadContactCount(nextLeadToCall.id) === 0
+                    ? "First Call"
+                    : `Attempt #${getLeadContactCount(nextLeadToCall.id) + 1}`}
+                </span>
+                <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] text-white font-mono">
+                  Score: {nextLeadToCall.score}
+                </span>
+              </div>
             </div>
 
             <div className="mt-2.5 flex items-start justify-between gap-3">
@@ -905,11 +995,11 @@ export function TelecallerMobileDashboard() {
           {activeTab === "queue" && (
             <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
               {[
-                { id: "all", label: `All Queue (${activeQueueLeads.length})` },
-                { id: "today", label: "Scheduled Today" },
+                { id: "pending", label: `📞 To Call (${uncontactedLeads.length})` },
+                { id: "contacted", label: `✅ Contacted (${contactedLeads.length})` },
+                { id: "today", label: `📅 Scheduled Today (${activeFollowUps.length})` },
                 { id: "hot", label: "🔥 Hot Leads" },
-                { id: "neet", label: "NEET 350+" },
-                { id: "uncontacted", label: "New Leads" },
+                { id: "all", label: `All Queue (${activeQueueLeads.length})` },
               ].map((chip) => (
                 <button
                   key={chip.id}
@@ -938,10 +1028,27 @@ export function TelecallerMobileDashboard() {
             </div>
 
             {filteredQueue.length === 0 ? (
-              <div className="rounded-2xl border-2 border-dashed border-slate-300 bg-white p-8 text-center text-xs text-slate-500 space-y-2">
-                <CheckCircle2 className="size-8 mx-auto text-emerald-600" />
-                <div className="font-bold text-sm text-slate-800">Queue is Clear!</div>
-                <p>No student leads matching your current filter in this division.</p>
+              <div className="rounded-2xl border-2 border-dashed border-slate-300 bg-white p-8 text-center text-xs text-slate-500 space-y-3">
+                <CheckCircle2 className="size-9 mx-auto text-emerald-600" />
+                <div className="font-bold text-sm text-slate-800">
+                  {queueFilter === "pending"
+                    ? "All Pending Calls Completed!"
+                    : "Queue is Clear!"}
+                </div>
+                <p className="text-slate-500 max-w-xs mx-auto">
+                  {queueFilter === "pending"
+                    ? "Great job! You have called all pending leads in your queue."
+                    : "No student leads matching your current filter in this division."}
+                </p>
+                {queueFilter === "pending" && contactedLeads.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setQueueFilter("contacted")}
+                    className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-3.5 py-2 rounded-xl shadow-xs transition cursor-pointer"
+                  >
+                    <span>View Contacted List ({contactedLeads.length})</span>
+                  </button>
+                )}
               </div>
             ) : (
               filteredQueue.map((lead) => (
@@ -968,7 +1075,25 @@ export function TelecallerMobileDashboard() {
                       </div>
                     </div>
 
-                    <SourceBadge value={lead.source} />
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <div className="flex items-center gap-1.5">
+                        {getLeadContactCount(lead.id) === 0 ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 border border-blue-200 px-2 py-0.5 text-[10px] font-bold text-blue-700">
+                            <span className="size-1.5 rounded-full bg-blue-500 animate-pulse" />
+                            0 Calls
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-300 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                            <Phone className="size-2.5 fill-emerald-600 text-emerald-600" />
+                            {getLeadContactCount(lead.id) === 1
+                              ? "1 Call"
+                              : `${getLeadContactCount(lead.id)} Calls`}
+                          </span>
+                        )}
+                        <StageBadge value={lead.stage} />
+                      </div>
+                      <SourceBadge value={lead.source} />
+                    </div>
                   </div>
 
                   {/* Highlights Line */}
@@ -1127,7 +1252,24 @@ export function TelecallerMobileDashboard() {
                       </Link>
                       <p className="text-xs font-mono text-slate-500">{lead.phone} · {lead.city}</p>
                     </div>
-                    <StageBadge value={lead.stage} />
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <div className="flex items-center gap-1.5">
+                        {getLeadContactCount(lead.id) === 0 ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 border border-blue-200 px-2 py-0.5 text-[10px] font-bold text-blue-700">
+                            <span className="size-1.5 rounded-full bg-blue-500 animate-pulse" />
+                            0 Calls
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-300 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                            <Phone className="size-2.5 fill-emerald-600 text-emerald-600" />
+                            {getLeadContactCount(lead.id) === 1
+                              ? "1 Call"
+                              : `${getLeadContactCount(lead.id)} Calls`}
+                          </span>
+                        )}
+                        <StageBadge value={lead.stage} />
+                      </div>
+                    </div>
                   </div>
 
                   <div className="flex flex-wrap gap-1.5 text-[11px]">
